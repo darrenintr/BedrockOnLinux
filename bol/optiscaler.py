@@ -459,10 +459,11 @@ def uninstall() -> None:
     ok("OptiScaler payload removed.")
 
 
-def status() -> dict:
+def get_status() -> dict:
+    """Return OptiScaler state without printing, for the GUI and tests."""
     game = Path(CONTENT).resolve()
     state = _read_state()
-    result = {
+    return {
         "enabled": enabled(),
         "payload": PAYLOAD.is_dir(),
         "version": state.get("version"),
@@ -471,6 +472,10 @@ def status() -> dict:
         "nvngx": (game / "nvngx.dll").is_file(),
         "proxy": (game / "dxgi.dll").is_file(),
     }
+
+
+def status() -> dict:
+    result = get_status()
     print(f"OptiScaler enabled: {'yes' if result['enabled'] else 'no'}")
     print(f"Payload installed: {'yes' if result['payload'] else 'no'}"
           + (f" ({result['version']})" if result['version'] else ""))
