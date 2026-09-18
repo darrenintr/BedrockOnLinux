@@ -41,6 +41,7 @@ from .games import installed_builds, list_editions, list_versions, remove_build
 from .gamesetup import do_setup
 from .inject import run_injector
 from .launch import direct_launch_readiness, launch, single_window_session
+from . import optiscaler
 from .navigation import ControllerNav
 from . import log
 from .log import BolError, _LEVELS, desktop_notify, warn
@@ -3145,6 +3146,36 @@ class MainWindow(QMainWindow):
 
         self._update_injector_settings_ui()
 
+        opti = card_section(
+            v, "OptiScaler (Experimental)",
+            "Enable Minecraft's native DLSS input path under Wine and route it "
+            "through OptiScaler for alternative upscalers and frame generation."
+        )
+        self.optiscaler_status_label = QLabel("")
+        self.optiscaler_status_label.setObjectName("Muted")
+        self.optiscaler_status_label.setWordWrap(True)
+        opti.addWidget(self.optiscaler_status_label)
+
+        opti_actions = QHBoxLayout()
+        self.optiscaler_primary_btn = btn(
+            "Install", self._do_optiscaler_primary, kind="primary", w=110, h=34,
+            tip="Download the tested OptiScaler build and prepare the active Minecraft version."
+        )
+        self.optiscaler_disable_btn = btn(
+            "Disable", self._do_optiscaler_disable, kind="ghost", w=100, h=34,
+            tip="Detach OptiScaler from the active Minecraft version without deleting its cached payload."
+        )
+        self.optiscaler_remove_btn = btn(
+            "Uninstall", self._do_optiscaler_uninstall, kind="ghost", w=100, h=34,
+            tip="Disable OptiScaler and remove its cached payload."
+        )
+        opti_actions.addWidget(self.optiscaler_primary_btn)
+        opti_actions.addWidget(self.optiscaler_disable_btn)
+        opti_actions.addWidget(self.optiscaler_remove_btn)
+        opti_actions.addStretch(1)
+        opti.addLayout(opti_actions)
+        self._refresh_optiscaler_ui()
+
         shortcuts = card_section(v, "Shortcuts")
         shortcuts.addWidget(tool_row("Create direct launch shortcut (skips this window)…",
                                  self._do_play_shortcut,
@@ -3185,6 +3216,94 @@ class MainWindow(QMainWindow):
         v.addWidget(self.tools_status_label)
         v.addStretch(1)
         return w
+
+    def _refresh_optiscaler_ui(self):
+        if not _alive(getattr(self, "optiscaler_status_label", None)):
+            return
+        state = optiscaler.get_status()
+        if not state["payload"]:
+            text = "Not installed. Install the tested OptiScaler payload to enable RTX upscaling/frame-generation support."
+            primary = "Install"
+        elif state["enabled"] and state["attached"] and state["nvngx"] and state["proxy"]:
+            version = f" {state['version']}" if state.get("version") else ""
+            text = f"Enabled{version} — proxy and physical nvngx.dll are attached to the active Minecraft build."
+            primary = "Re-sync"
+        elif state["enabled"]:
+            text = "Enabled, but not fully attached to the active Minecraft build. Re-sync to repair the setup."
+            primary = "Re-sync"
+        else:
+            text = "Installed but disabled. Enable it to attach the proxy to the active Minecraft build."
+            primary = "Enable"
+        self.optiscaler_status_label.setText(text)
+        self.optiscaler_primary_btn.setText(primary)
+        self.optiscaler_disable_btn.setEnabled(bool(state["enabled"]))
+        self.optiscaler_remove_btn.setEnabled(bool(state["payload"]))
+
+    def _run_optiscaler_action(self, title, fn, success):
+        if _mc_running():
+            self.warn_box(
+                "OptiScaler",
+                "Close Minecraft before changing the OptiScaler integration."
+            )
+            return
+        self.tools_status_label.setText(f"{title}…")
+        self.optiscaler_primary_btn.setEnabled(False)
+        self.optiscaler_disable_btn.setEnabled(False)
+        self.optiscaler_remove_btn.setEnabled(False)
+
+        worker = Worker(fn)
+
+        def finished(_result):
+            if not _alive(self):
+                return
+            self.tools_status_label.setText("")
+            self._refresh_optiscaler_ui()
+            self.info_box("OptiScaler", success)
+
+        def failed(message):
+            if not _alive(self):
+                return
+            self.tools_status_label.setText("")
+            self._refresh_optiscaler_ui()
+            self.error_box("OptiScaler", message)
+
+        worker.done.connect(finished)
+        worker.failed.connect(failed)
+        if not self._start_worker("optiscaler", worker):
+            self.tools_status_label.setText("Another OptiScaler operation is already running.")
+            self._refresh_optiscaler_ui()
+
+    def _do_optiscaler_primary(self):
+        state = optiscaler.get_status()
+        if not state["payload"]:
+            self._run_optiscaler_action(
+                "Installing OptiScaler", optiscaler.install,
+                "OptiScaler is installed and enabled for the active Minecraft build.\n\n"
+                "Open its in-game overlay with Insert. Frame generation remains off "
+                "until you explicitly enable Active in the OptiScaler overlay."
+            )
+        else:
+            self._run_optiscaler_action(
+                "Enabling OptiScaler", optiscaler.enable,
+                "OptiScaler is enabled and synchronized to the active Minecraft build."
+            )
+
+    def _do_optiscaler_disable(self):
+        self._run_optiscaler_action(
+            "Disabling OptiScaler", optiscaler.disable,
+            "OptiScaler is disabled. Its cached payload and your overlay settings were kept."
+        )
+
+    def _do_optiscaler_uninstall(self):
+        if not self.question_box(
+                "Uninstall OptiScaler",
+                "Disable OptiScaler and remove its cached payload?\n\n"
+                "The managed proxy and nvngx.dll copy will be detached from the active build."):
+            return
+        self._run_optiscaler_action(
+            "Uninstalling OptiScaler", optiscaler.uninstall,
+            "OptiScaler was disabled and its cached payload was removed."
+        )
 
     def _do_import(self):
         files, _ = QFileDialog.getOpenFileNames(
